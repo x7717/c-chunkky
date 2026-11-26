@@ -8397,3 +8397,10 @@ Q6 — главный фронт до 5ms (cover->100% + busy<=10 — см. cont
 ### Честные границы
 - col-memo НЕ бьёт noise-листья пак-деревьев (они не под Cache2d — dprof noise calls 462272 unchanged) — следующий рычаг: noise col8 y-chain ядро для uniform-колонок batch8 + ShiftA/ShiftB broadcast (y=0 const). material 32% уже row4-оптимизирован на пак-пути (87% taken); остаток = per-block fallback аквифер-полосы.
 - 1ms MAX e2e на этом стенде структурно недостижима (STATUS cont-123: нужен ~33 воркер или 30x CPU-срез с нарушением бит-точности); вектор — срезать CPU нативного филла однониточными техниками (продолжение cont-124-127 линии на пак-движок).
+
+### ВЕРДИКТ CI cont-153 (форк-ран 45884640554 @ 37f74392; push в upstream = 403 для x7717, ран на форке x7717/c-chunkky)
+- **native: SUCCESS** — build, 102/102, bench smoke, SIMD parity gate, fill263golden oracle (дополнительно BIT-EXACT проверен локально до пуша), clippy.
+- plugin: SUCCESS (23s).
+- integration: FAILURE — ТОЛЬКО шаг "A/B carvers" = документированный cont-151 topMaterial остаток (DIRT +1218/GRASS_BLOCK −332/CLAY +1150 — тот же класс, числа боbox-зависимы как задокументировано). Поверх конт-153 изменений: surface lane GATE PASS (bit-equal), fill263 oracle BIT-EXACT, ore-pair исполнился — batch-spline/col-memo не implicated (не касаются carver/topMaterial путей).
+- **Честные окна CI (4-core, par4)**: par4ore ON e2e=26.30 (gen=11.46 native=11.08 carver=4.01 busy=9.0 cover=34.1% margin_fills=256 margin_fill_cpu=21.1ms/ch deco_tail=316ms) vs OFF e2e=17.54 (carver=0.00). Пара-дельта carver-tax 8.76 (cont-151: 10.87 — на других регионах, сравнение только качественное).
+- Экономика окна после cont-153: margin-филлы 256/окно × ~11.7ms (с fused-carve) = ~20.8ms/ch — главный кит окна; fill −21% транслируется ~1:1 в margin_cpu. Следующие резервы: material-фоллбек (аквифер per-block полосы 1.28ms/fill), blend-путь пак-деревьев (0.67ms/fill), deco upcalls (63K other/window), Paper-side (cover 34%).
