@@ -271,11 +271,12 @@ fn main() {
             crussty_chunkgen::density::SCOL_MISSES.load(Relaxed),
         );
         println!(
-            "mat142: row4={:.2}ms/{} rows (taken={} fallback={})",
+            "mat142: row4={:.2}ms/{} rows (taken={} fallback={}) | aquifer_subst={:.2}ms",
             crussty_chunkgen::nochunk::MT_ROW4_NS.load(Relaxed) as f64 / 1e6,
             crussty_chunkgen::nochunk::MT_ROW4_ROWS.load(Relaxed),
             crussty_chunkgen::nochunk::MT_ROW4_TAKEN.load(Relaxed),
             crussty_chunkgen::nochunk::MT_FB_ROWS.load(Relaxed),
+            crussty_chunkgen::nochunk::AQ_SUBSTANCE_NS.load(Relaxed) as f64 / 1e6,
         );
         if std::env::var("CRUS_COLCHECK").as_deref() == Ok("1") {
             let check: u32 = std::env::var("CRUS_COLCHECK_N")

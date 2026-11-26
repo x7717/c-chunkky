@@ -8404,3 +8404,8 @@ Q6 — главный фронт до 5ms (cover->100% + busy<=10 — см. cont
 - integration: FAILURE — ТОЛЬКО шаг "A/B carvers" = документированный cont-151 topMaterial остаток (DIRT +1218/GRASS_BLOCK −332/CLAY +1150 — тот же класс, числа боbox-зависимы как задокументировано). Поверх конт-153 изменений: surface lane GATE PASS (bit-equal), fill263 oracle BIT-EXACT, ore-pair исполнился — batch-spline/col-memo не implicated (не касаются carver/topMaterial путей).
 - **Честные окна CI (4-core, par4)**: par4ore ON e2e=26.30 (gen=11.46 native=11.08 carver=4.01 busy=9.0 cover=34.1% margin_fills=256 margin_fill_cpu=21.1ms/ch deco_tail=316ms) vs OFF e2e=17.54 (carver=0.00). Пара-дельта carver-tax 8.76 (cont-151: 10.87 — на других регионах, сравнение только качественное).
 - Экономика окна после cont-153: margin-филлы 256/окно × ~11.7ms (с fused-carve) = ~20.8ms/ch — главный кит окна; fill −21% транслируется ~1:1 в margin_cpu. Следующие резервы: material-фоллбек (аквифер per-block полосы 1.28ms/fill), blend-путь пак-деревьев (0.67ms/fill), deco upcalls (63K other/window), Paper-side (cover 34%).
+
+### cont-153 addendum (post-verdict probes)
+- spline_pt после батч-сплайна: 14.33ms → 3.47ms на 16 филлах (**−76%**) — сплайн больше не доминирует slice.
+- Новый h6-топ пак-филла: blend 0.67ms/филл (col-путь уже активен — lanes_uniform), noise-листья ~0.59ms/филл (plane-major column cache уже в проде), shift_a/b 0.028ms/филл (broadcast — кандидат cont-154, маргинален).
+- dpperf: +AQ_SUBSTANCE_NS печать (0.00ms — таймер не на material-пути; material fallback 1.1ms/филл = аквифер per-block substance на водных полосах, ~192ns/блок — цель cont-154: проверить ванильный grid-cache в legacy-аквифере).
