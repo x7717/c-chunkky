@@ -8373,3 +8373,27 @@ Q6 — главный фронт до 5ms (cover->100% + busy<=10 — см. cont
   carve=3.56ms/ч, opsApplied=859917, declined=0); carve-in-fill (n=0 — ноль
   JNI-раундтрипов); без deco-pool CarverDriver молча отказывается (ctx=0,
   deco=1-only ограничение cont-95).
+
+## cont-153 (2026-11-27): ВОССТАНОВЛЕНИЕ СТЕНДА + batch-сплайн (пак-движок −21%) + scalar col-memo инфраструктура
+### Контекст
+- Песочница пересоздана: c-faster/ (весь клон) и /home/z/tools потеряны; JNI-контракт и plugin-состояние восстановлены CFR-декомпиляцией уцелевшего CrusstyGen.jar в /home/z/my-project/recovery (RECOVERY.md). Репо реидентифицировано по API: PLANETA9091/c-chunkky (описание «Vanilla-exact 1ms chunk generation»), клон в c-faster/. HEAD 438b16e5 (cont-152 addendum).
+- sandbox_recover.sh --skip-git: cargo 1.100.0, JDK 25.0.5+8, paper 222 (sha256 ok), native .so 8667768B, plugin/probe билд — RECOVER OK. ab263_ci.sh ore (SRV_DIR=/home/z/my-project/server263): **GATE PASS (11 materials within the deterministic ore signature)**, blockdump divergent 288 (deco-noise класс). cargo test --lib 102/102.
+### Базовые замеры (2-core сандбокс, паки .dpz tectonic 3.0.29 + terralith 2.6.5+26.3, carve-in-fill ON, seed 3257840388504953787)
+- честные окна @2000: 44.59/57.51/29.49 ms/ch (шумный сандбокс); native noise stage mean=13.3ms p50=9.0ms; deco mean=4.85ms run=3.60ms; marks 91602==91602, air-секций 22128.
+- dpperf (изолированный пак-филл, chunk 125,125 = блок 2000,2000): p50=8.42ms; фазы slice=3.42ms (57%) / material=1.91ms (32%) / cellfill=0.21.
+- h6-цензус: **spline_pt=723ns/pt — 0.9ms/филл, БОЛЬШЕ всех шумовых листьев вместе** (noise ~0.59ms, blend 0.67ms); mat142 row4 taken=87% на пак-пути (pack noise_settings aquifers=false → 0 на ваниль-лапе — не баг).
+- КЛЮЧЕВАЯ НАХОДКА: batch Spline-арм звал spline_apply PER-LANE с mem=None — вложенное сплайн-дерево обходилось 8 раз на батч с идентичными stamp-контекстами.
+### Work Log
+- **batch-сплайн (density.rs eval_batch_recurse)**: per-lane интервалы считаются первыми (бинарный поиск по f[l]), затем ТОЛЬКО заюзанные детьми interval-endpoint ноды батчатся по одному разу (per-batch stamps), потом per-lane f32-математика 1:1 как в spline_apply ((float) cast того же f64 значения ребёнка). Лимит 8 различный детей на батч (SPL_MAX) — редкие переполнения падают в старый скалярный путь. Kill-switch CRUS_BATCH_SPLINE=0.
+- **scalar col-memo (density.rs + nochunk.rs)**: вычислено, что главный strip-путь ВООБЩЕ НЕ получал col-слоты (MemoCtx::new без with_cols в strip_reset_for_fill/thread_clone/plane-path — только new() и prelim). Провязаны with_cols во все три места. Скоуп STRICT по умолчанию (только compile-PROVEN y-invariant дети — bit-identical BY CONSTRUCTION), CRUS_COLVANILLA=1 — vanilla-контрактные слоты (как batch-путь), CRUS_COLMEMO=0 — полный passthrough. Счётчики SCOL_HITS/MISSES в dpperf.
+- dpperf: +scolmemo/mat142-печати + CRUS_COLCHECK=1 бит-парити пасс (fnv-хэш 48 чанков).
+### Верификация (бит-точность)
+- colcheck-хэш e97d393511e48d15 ИДЕНТИЧЕН во всех 4 конфигах (batch-spline on/off × strict/vanilla-contract) на пак-наборе 48 чанков; strict = bit-identical by construction (proven y-invariant reuse).
+- Сервер: marks 91602==91602, air 22128==22128 — байт-та же генерация.
+- cargo test --lib 102/102.
+### Замеры
+- dpperf пак-филл (125,125): scalar-spline 8.29-8.35ms → batch-spline 6.58-6.69ms = **−1.7ms (−21%)**; vbench ваниль-деревья: 14.97→11.77ms = **−21.7%** — универсальный выигрыш.
+- Серверные честные окна: дельта в шуме 2-core сандбокса (43.85/57.68/31.11 vs 44.59/57.51/29.49) — честный счёт только на CI (ab263_ci.sh окна 4-ядерные).
+### Честные границы
+- col-memo НЕ бьёт noise-листья пак-деревьев (они не под Cache2d — dprof noise calls 462272 unchanged) — следующий рычаг: noise col8 y-chain ядро для uniform-колонок batch8 + ShiftA/ShiftB broadcast (y=0 const). material 32% уже row4-оптимизирован на пак-пути (87% taken); остаток = per-block fallback аквифер-полосы.
+- 1ms MAX e2e на этом стенде структурно недостижима (STATUS cont-123: нужен ~33 воркер или 30x CPU-срез с нарушением бит-точности); вектор — срезать CPU нативного филла однониточными техниками (продолжение cont-124-127 линии на пак-движок).

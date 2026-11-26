@@ -1723,7 +1723,8 @@ impl<'e> ChunkGen<'e> {
             plane_pool: Vec::new(),
             plane_scratch: Vec::new(),
             aquifer: std::sync::Arc::clone(&self.aquifer),
-            memo: MemoCtx::new(self.compiled.arena.len()),
+            memo: MemoCtx::new(self.compiled.arena.len())
+                .with_cols(self.compiled.col_count as usize),
             prof: Prof {
                 enabled: self.prof.enabled,
                 ..Default::default()
@@ -1755,7 +1756,8 @@ impl<'e> ChunkGen<'e> {
             enabled: self.prof.enabled,
             ..Default::default()
         };
-        self.memo = MemoCtx::new(self.compiled.arena.len());
+        self.memo = MemoCtx::new(self.compiled.arena.len())
+            .with_cols(self.compiled.col_count as usize);
     }
 
     /// Parallel fill: all corner planes up front (workers over planes), then
@@ -2188,7 +2190,8 @@ impl<'e> ChunkGen<'e> {
                 let compiled = &self.compiled;
                 let env = self.env;
                 let children = &self.interp_children;
-                let mut memo = MemoCtx::new(compiled.arena.len());
+                let mut memo = MemoCtx::new(compiled.arena.len())
+                    .with_cols(compiled.col_count as usize);
                 for p in 0..total {
                     let i = p / ny1;
                     let y = p % ny1;

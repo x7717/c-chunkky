@@ -64,6 +64,9 @@ impl Mode {
 /// (one corner point / one block / one prelim probe).
 pub static COL_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static COL_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// cont-153 scalar-path strict column memo counters (dpperf visibility).
+pub static SCOL_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SCOL_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub struct MemoCtx {
     stamp: Box<[Cell<u64>]>,
@@ -374,6 +377,12 @@ pub struct Compiled {
     pub col_idx: Vec<u32>,
     /// Number of assigned column-cache slots (size of BatchMemo col storage).
     pub col_count: u32,
+    /// cont-153: STRICT column slots for the scalar path — only
+    /// Cache2d/FlatCache nodes whose child subtree is proven y-invariant by
+    /// the conservative compile rules (values re-derived bit-identically at
+    /// any y for fixed (x, z)). Slot indices alias col_idx; u32::MAX = no
+    /// scalar column memo for this node.
+    pub col_strict: Vec<u32>,
     /// Per-Interpolated-slot y-range constants: Some((lo, hi, c)) when the
     /// wrapped child is a RangeChoice whose input is the vanilla "minecraft:y"
     /// identity gradient and whose out-of-range branch is a constant — the
@@ -1202,7 +1211,7 @@ impl Env {
             })
             .collect();
         // column-cache slots for y-independent Cache2d/FlatCache subtrees
-        let (col_idx, col_count) = compute_col_caches(&c.arena);
+        let (col_idx, col_strict, col_count) = compute_col_caches(&c.arena);
         // per-slot y-range constants (RangeChoice over the y identity)
         let interp_slot_y_const = c
             .interp_children
@@ -1221,6 +1230,7 @@ impl Env {
             interp_children: c.interp_children,
             col_idx,
             col_count,
+            col_strict,
             interp_slot_y_const,
             node_y_upper_const,
         }
@@ -1415,7 +1425,7 @@ fn compute_y_upper_consts(arena: &[WKind]) -> Vec<Option<(f64, YUpperConst)>> {
 /// ShiftedNoise iff y_scale==0 and all three shift inputs are invariant;
 /// everything touching y directly (OldBlendedNoise, YClampedGradient,
 /// WeirdScaledSampler, Spline, Interpolated, EndIslands) is variant.
-fn compute_col_caches(arena: &[WKind]) -> (Vec<u32>, u32) {
+fn compute_col_caches(arena: &[WKind]) -> (Vec<u32>, Vec<u32>, u32) {
     // 0 = unknown, 1 = in progress, 2 = y-invariant, 3 = y-variant
     let mut state = vec![0u8; arena.len()];
     let mut col_idx = vec![u32::MAX; arena.len()];
@@ -1532,7 +1542,30 @@ fn compute_col_caches(arena: &[WKind]) -> (Vec<u32>, u32) {
             state[iu] = if yinv { 2 } else { 3 };
         }
     }
-    (col_idx, next_slot)
+    // cont-153 strict scalar-path slots: a Cache2d/FlatCache node earns a
+    // strict column slot only when its child subtree is PROVEN y-invariant
+    // by the conservative rules above (state == 2). Reusing the value of a
+    // proven-y-invariant pure function across y at the same (x, z) is
+    // bit-identical to recomputation BY CONSTRUCTION (unlike the
+    // vanilla-contract col_idx above, which relies on the empirical
+    // y-independence documented in the walk). The scalar strip path uses
+    // only strict slots so its output stays bit-identical to the per-y
+    // passthrough engine that passed the judge + ab263 gates.
+    let mut col_strict = vec![u32::MAX; arena.len()];
+    for (iu, node) in arena.iter().enumerate() {
+        if matches!(node, WKind::Cache2d { .. } | WKind::FlatCache { .. })
+            && col_idx[iu] != u32::MAX
+        {
+            let child = match node {
+                WKind::Cache2d { child } | WKind::FlatCache { child } => *child as usize,
+                _ => unreachable!(),
+            };
+            if state[child] == 2 {
+                col_strict[iu] = col_idx[iu];
+            }
+        }
+    }
+    (col_idx, col_strict, next_slot)
 }
 
 /// The "minecraft:terrain" XoroshiroRandomSource for the given worldgen seed:
@@ -2049,6 +2082,37 @@ fn slice_colpath_enabled() -> bool {
     *V.get_or_init(|| std::env::var("CRUS_SLICE_GENERIC").as_deref() != Ok("1"))
 }
 
+/// cont-153 scalar column-memo kill-switch (CRUS_COLMEMO=0 restores the
+/// per-y passthrough for Cache2d/FlatCache on the scalar strip path —
+/// bit-identical by construction, measured before/after in dpperf).
+fn colmemo_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CRUS_COLMEMO").as_deref() != Ok("0"))
+}
+
+/// cont-153 scalar column-memo scope: Strict (compile-proven y-invariant
+/// children only — bit-identical by construction, DEFAULT) vs
+/// VanillaContract (every Cache2d/FlatCache slot — same slots the batch
+/// path uses; CRUS_COLVANILLA=1 opts in; empirically hash-identical on the
+/// dpperf pack set, but the strict default keeps zero parity risk).
+pub enum ColScope {
+    Strict,
+    VanillaContract,
+}
+fn colmemo_scope() -> ColScope {
+    static V: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    match V.get_or_init(|| {
+        if std::env::var("CRUS_COLVANILLA").as_deref() == Ok("1") {
+            0
+        } else {
+            1
+        }
+    }) {
+        0 => ColScope::VanillaContract,
+        _ => ColScope::Strict,
+    }
+}
+
 #[inline]
 fn blended_batch_n<const N: usize>(
     blended: &[crate::noise::BlendedNoise],
@@ -2538,15 +2602,173 @@ impl Env {
                 } else {
                     None
                 };
-                let mut out = [0f64; N];
-                for l in 0..N {
-                    out[l] = spline_apply(self, c, points, f[l], pts[l], mode, interp, None) as f64;
+                let n = points.len();
+                let last = n - 1;
+                // cont-153: the scalar path walked the nested spline tree PER
+                // LANE (mem=None, 8x redundant per batch) — the dominant slice
+                // cost on pack trees (h6 spline_pt 723ns/point). Fast path:
+                // lanes in a batch span a tiny y-range, so only a few interval
+                // endpoints are referenced; evaluate each referenced child
+                // ONCE (per-batch stamps), then run the same per-lane f32
+                // interval + lerp arithmetic as spline_apply ((float) cast of
+                // the same f64 child value — bit-exact). Batches needing more
+                // than SPL_MAX distinct children (rare) take the scalar path.
+                const SPL_MAX: usize = 8;
+                // cont-153 kill-switch: CRUS_BATCH_SPLINE=0 restores the
+                // per-lane scalar spline_apply (bit-identical output).
+                let mut spl_ok = std::env::var("CRUS_BATCH_SPLINE").as_deref() != Ok("0");
+                let mut iv = [0isize; N];
+                let mut kids = [usize::MAX; SPL_MAX];
+                let mut kid_rows: [[f32; N]; SPL_MAX] = [[0.0; N]; SPL_MAX];
+                let mut nkids = 0usize;
+                if spl_ok && n <= 4096 {
+                    for l in 0..N {
+                        let fl = f[l];
+                        let mut lo: usize = 0;
+                        let mut hi: usize = n;
+                        while lo < hi {
+                            let mid = (lo + hi) / 2;
+                            if fl < points[mid].0 {
+                                hi = mid;
+                            } else {
+                                lo = mid + 1;
+                            }
+                        }
+                        let i = lo as isize - 1;
+                        iv[l] = i;
+                        let pair: [usize; 2] = if i < 0 {
+                            [0, usize::MAX]
+                        } else if i as usize == last {
+                            [last, usize::MAX]
+                        } else {
+                            [i as usize, i as usize + 1]
+                        };
+                        for k in pair {
+                            if k == usize::MAX {
+                                continue;
+                            }
+                            if matches!(points[k].1, SplineValueW::Node(_)) {
+                                let mut slot = usize::MAX;
+                                for s in 0..nkids {
+                                    if kids[s] == k {
+                                        slot = s;
+                                        break;
+                                    }
+                                }
+                                if slot == usize::MAX {
+                                    if nkids == SPL_MAX {
+                                        spl_ok = false;
+                                        break;
+                                    }
+                                    kids[nkids] = k;
+                                    slot = nkids;
+                                    nkids += 1;
+                                }
+                                let _ = slot;
+                            }
+                        }
+                        if !spl_ok {
+                            break;
+                        }
+                    }
                 }
-                if let Some(t0) = sp_t {
-                    H6_SPLINE_PT_NS.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-                    H6_SPLINE_PT_EVALS.fetch_add(N as u64, std::sync::atomic::Ordering::Relaxed);
+                if spl_ok {
+                    for s in 0..nkids {
+                        let k = kids[s];
+                        if let SplineValueW::Node(node) = &points[k].1 {
+                            let d = self.eval_batch_uncached(c, *node, pts, mode, interp, memo);
+                            let mut row = [0f32; N];
+                            for l in 0..N {
+                                row[l] = d[l] as f32;
+                            }
+                            kid_rows[s] = row;
+                        }
+                    }
+                    let row_of = |k: usize| -> usize {
+                        let mut s = 0usize;
+                        while s < nkids {
+                            if kids[s] == k {
+                                return s;
+                            }
+                            s += 1;
+                        }
+                        usize::MAX
+                    };
+                    let mut out = [0f64; N];
+                    for l in 0..N {
+                        let fl = f[l];
+                        let i = iv[l];
+                        if i < 0 {
+                            let der = points[0].2;
+                            let v = if let SplineValueW::Const(cv) = points[0].1 {
+                                cv
+                            } else {
+                                kid_rows[row_of(0)][l]
+                            };
+                            out[l] = if der == 0.0 {
+                                v as f64
+                            } else {
+                                (v + der * (fl - points[0].0)) as f64
+                            };
+                        } else if i as usize == last {
+                            let der = points[last].2;
+                            let v = if let SplineValueW::Const(cv) = points[last].1 {
+                                cv
+                            } else {
+                                kid_rows[row_of(last)][l]
+                            };
+                            out[l] = if der == 0.0 {
+                                v as f64
+                            } else {
+                                (v + der * (fl - points[last].0)) as f64
+                            };
+                        } else {
+                            let iu = i as usize;
+                            let f1 = points[iu].0;
+                            let f2 = points[iu + 1].0;
+                            let f3 = (fl - f1) / (f2 - f1);
+                            let f4d = points[iu].2;
+                            let f5 = points[iu + 1].2;
+                            let f6 = if let SplineValueW::Const(cv) = points[iu].1 {
+                                cv
+                            } else {
+                                kid_rows[row_of(iu)][l]
+                            };
+                            let f7 = if let SplineValueW::Const(cv) = points[iu + 1].1 {
+                                cv
+                            } else {
+                                kid_rows[row_of(iu + 1)][l]
+                            };
+                            let f8 = f4d * (f2 - f1) - (f7 - f6);
+                            let f9 = -f5 * (f2 - f1) + (f7 - f6);
+                            let l0 = f6 + f3 * (f7 - f6);
+                            let l1 = f8 + f3 * (f9 - f8);
+                            out[l] = (l0 + f3 * (1.0f32 - f3) * l1) as f64;
+                        }
+                    }
+                    if let Some(t0) = sp_t {
+                        H6_SPLINE_PT_NS.fetch_add(
+                            t0.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        H6_SPLINE_PT_EVALS.fetch_add(N as u64, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    out
+                } else {
+                    let mut out = [0f64; N];
+                    for l in 0..N {
+                        out[l] =
+                            spline_apply(self, c, points, f[l], pts[l], mode, interp, None) as f64;
+                    }
+                    if let Some(t0) = sp_t {
+                        H6_SPLINE_PT_NS.fetch_add(
+                            t0.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        H6_SPLINE_PT_EVALS.fetch_add(N as u64, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    out
                 }
-                out
             }
             WKind::WeirdScaledSampler { noise_id, mapper_type2, input } => {
                 let v = self.eval_batch_uncached(c, *input, pts, mode, interp, memo);
@@ -2957,16 +3179,30 @@ impl Env {
                 d * v.abs()
             }
             WKind::Cache2d { child } | WKind::FlatCache { child }
-                if c.col_idx[idx as usize] != u32::MAX =>
+                if colmemo_enabled()
+                    && match colmemo_scope() {
+                        ColScope::Strict => c.col_strict[idx as usize] != u32::MAX,
+                        ColScope::VanillaContract => c.col_idx[idx as usize] != u32::MAX,
+                    } =>
             {
-                // y-invariant child (compile-time proven): one value serves
-                // the whole (x, z) column — bit-exact pure-function reuse.
+                // cont-153: column memo on the scalar strip path. Strict mode
+                // (default OFF) uses only compile-PROVEN y-invariant children
+                // (bit-identical by construction). VanillaContract mode uses
+                // the same unconditional Cache2d/FlatCache slots the batch
+                // path has used in production since cont-137 — vanilla
+                // computes the wrapped value ONCE per (x, z) and reuses it
+                // for every y of the column (1.21.8 DensityFunctions$Cache2D
+                // contract, verified during the dptt era; the repo's own
+                // compile walk documents the same contract). CRUS_COLMEMO=0
+                // restores the full per-y passthrough.
                 match mem {
                     Some(m) if !m.cols.is_empty() => {
                         let ci = c.col_idx[idx as usize] as usize;
                         if let Some(v) = col_lookup4(&m.cols[ci], pt.x, pt.z) {
+                            SCOL_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             v
                         } else {
+                            SCOL_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             COL_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let v = self.eval(c, *child, pt, mode, interp, mem);
                             col_store4(&m.cols[ci], pt.x, pt.z, v);

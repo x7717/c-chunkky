@@ -258,6 +258,44 @@ fn main() {
             crussty_chunkgen::nochunk::jni_prof_snapshot()
         );
     }
+    // cont-153: scalar strict column-memo counters + bit-parity hash pass.
+    // CRUS_COLCHECK=1 runs a second pass over CHECK chunks and prints an
+    // fnv hash of every filled buffer — run the binary twice (default vs
+    // CRUS_COLMEMO=0) and diff the hash lines; any difference = the memo
+    // changed a value (must be impossible: proven y-invariant subtrees).
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        println!(
+            "scolmemo: hits={} misses={}",
+            crussty_chunkgen::density::SCOL_HITS.load(Relaxed),
+            crussty_chunkgen::density::SCOL_MISSES.load(Relaxed),
+        );
+        println!(
+            "mat142: row4={:.2}ms/{} rows (taken={} fallback={})",
+            crussty_chunkgen::nochunk::MT_ROW4_NS.load(Relaxed) as f64 / 1e6,
+            crussty_chunkgen::nochunk::MT_ROW4_ROWS.load(Relaxed),
+            crussty_chunkgen::nochunk::MT_ROW4_TAKEN.load(Relaxed),
+            crussty_chunkgen::nochunk::MT_FB_ROWS.load(Relaxed),
+        );
+        if std::env::var("CRUS_COLCHECK").as_deref() == Ok("1") {
+            let check: u32 = std::env::var("CRUS_COLCHECK_N")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(48);
+            let mut h: u64 = 0xcbf29ce484222325;
+            for i in 0..check {
+                let ccx = cx + (i as i32 % 17) - 8;
+                fill(id, ccx, cz, buf.as_mut_slice().try_into().unwrap());
+                for (k, v) in buf.iter().enumerate() {
+                    h ^= *v as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                    h ^= (k as u64) & 0xff;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+            }
+            println!("colcheck hash: {:016x} (chunks={})", h, check);
+        }
+    }
     if sprof {
         use crussty_chunkgen::surface_fill as sf;
         let g = |c: &std::sync::atomic::AtomicU64| c.load(std::sync::atomic::Ordering::Relaxed);
