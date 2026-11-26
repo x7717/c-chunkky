@@ -4,6 +4,15 @@
 (записи cont-XX по датам). Этот файл обновляется при изменении КАРТЫ, не при
 каждом тике. Последнее обновление: cont-152.
 
+## CONT-153 КАРТА (главное)
+
+- **ВОССТАНОВЛЕНИЕ**: песочница пересоздана (клон c-faster/ + /home/z/tools потеряны); репо реидентифицировано = PLANETA9091/c-chunkky, клон восстановлен; JNI-контракт/плагин-состояние восстановлены CFR из уцелевшего CrusstyGen.jar (/home/z/my-project/recovery/RECOVERY.md). sandbox_recover.sh → RECOVER OK; ab263 ore GATE PASS; 102/102.
+- **BATCH-СПЛАЙН (density.rs, главный сплайн-филл резерв пак-движка)**: batch Spline-арм звал spline_apply PER-LANE с mem=None (вложенное сплайн-дерево 8x на батч); теперь per-lane интервалы → батч только заюзанных interval-endpoint детей (per-batch stamps, ≤8 на батч, переполнение → скалярный fallback) → per-lane f32-математика 1:1 spline_apply. Kill-switch CRUS_BATCH_SPLINE=0. **dpperf пак-филл 8.29-8.35 → 6.58-6.69 ms (−21%), vbench ваниль 14.97 → 11.77 ms (−21.7%)**; h6: spline_pt был 723ns/pt (0.9ms/филл — больше всех noise-листьев вместе).
+- **SCALAR COL-MEMO**: главный strip-путь НИКОГДА не получал col-слоты (MemoCtx::new без with_cols в strip_reset_for_fill/thread_clone/plane-path). Провязаны все три места. Дефолт STRICT (compile-PROVEN y-invariant дети — bit-identical by construction); CRUS_COLVANILLA=1 vanilla-контракт (эмпирически хэш-идентичен), CRUS_COLMEMO=0 passthrough. На пак-деревьях ≈0 (noise-листья НЕ под Cache2d — col2d hit/miss 0/17344 → noise calls unchanged) — инфраструктура для будущих слотов.
+- **БИТ-ПАРИТИ**: colcheck-хэш e97d393511e48d15 идентичен во всех 4 конфигах (spline on/off × memo scope) на 48 пак-чанках; сервер marks 91602==91602, air 22128==22128; 102/102.
+- **ПРОФИЛЬ ПАК-ФИЛЛА после сплайна (chunk 125,125)**: slice ~2.2ms (noise 0.59 [уже column-cached: plane-major memo], blend 0.67 [b8col], wrappers ~0.9) + material 1.91 (row4 87% taken на пак-пути; fallback = аквифер per-block полосы) + cellfill 0.21. Следующие резервы: material-фоллбек, deco upcall-батчинг (219K JNI upcalls/окно), Paper-side.
+- CI: форк-ран (x7717/c-chunkky, push в upstream = 403 у x7717; upstream write-токен недоступен) — gates решают на форк-ране; вердикт в worklog.
+
 ## CONT-152 КАРТА (главное)
 
 - **ПАКОВЫЙ КАРВ В МОМЕНТЕ ЗАЛИВКИ (carve-in-fill, ЗАДАЧА ВОССТАНОВЛЕНА)**:
